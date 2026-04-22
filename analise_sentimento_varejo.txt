@@ -1,0 +1,70 @@
+"""
+Projeto: Análise de Sentimento e Predição de Preços de Varejo
+Descrição: Pipeline de Ciência de Dados que utiliza NLP para medir o humor das notícias 
+           e XGBoost para tentar prever o retorno diário da Magazine Luiza (MGLU3).
+"""
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import pandas_gbq
+from newsapi import NewsApiClient
+from transformers import BertTokenizer, BertForSequenceClassification, pipeline
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+
+# --- 1. CONFIGURAÇÕES (Substituir pelos teus dados) ---
+PROJECT_ID = 'SEU_PROJETO_GCP'
+NEWS_API_KEY = 'SUA_CHAVE_AQUI'
+DATASET_ID = 'estudo_varejo'
+TICKER = 'MGLU3.SA'
+
+# --- 2. COLETA DE DADOS (Preços e Notícias) ---
+# Download de preços via Yahoo Finance
+df_precos = yf.download(TICKER, start="2024-01-01")
+df_precos['retorno_log'] = np.log(df_precos['Close'] / df_precos['Close'].shift(1))
+df_precos.reset_index(inplace=True)
+
+# Limpeza de colunas para o BigQuery
+df_precos.columns = [col.lower().replace('.', '_').replace(' ', '_') + '_' for col in df_precos.columns]
+
+# Coleta de notícias via NewsAPI
+newsapi = NewsApiClient(api_key=NEWS_API_KEY)
+res = newsapi.get_everything(q='Magazine Luiza OR varejo', language='pt', sort_by='publishedAt')
+df_noticias = pd.DataFrame(res['articles'])[['publishedAt', 'description']]
+df_noticias['publishedAt'] = pd.to_datetime(df_noticias['publishedAt'])
+
+# --- 3. NLP: ANÁLISE DE SENTIMENTO (FinBERT) ---
+model_name = "ProsusAI/finbert"
+tokenizer = BertTokenizer.from_pretrained(model_name)
+model = BertForSequenceClassification.from_pretrained(model_name)
+nlp_pipe = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+
+def get_sentiment(text):
+    if not text: return 0
+    result = nlp_pipe(text[:512])[0]
+    return result['score'] if result['label'] == 'positive' else (-result['score'] if result['label'] == 'negative' else 0)
+
+df_noticias['score'] = df_noticias['description'].apply(get_sentiment)
+
+# --- 4. ENGENHARIA DE ATRIBUTOS (Time Series Lag) ---
+df_diario = df_noticias.groupby(df_noticias['publishedAt'].dt.date)['score'].mean().reset_index()
+df_diario.columns = ['data_limpa', 'sentimento_media']
+
+df_precos['data_limpa'] = pd.to_datetime(df_precos['date_']).dt.date
+df_final = pd.merge(df_precos, df_diario, on='data_limpa', how='inner')
+
+# Criando o Lag: O sentimento de ONTÉM explica o preço de HOJE
+df_final['sentimento_ontem'] = df_final['sentimento_media'].shift(1)
+df_final.dropna(inplace=True)
+
+# --- 5. MODELAGEM (XGBoost) ---
+X = df_final[['sentimento_ontem']]
+y = df_final['retorno_log_']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+model_xgb = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05)
+model_xgb.fit(X_train, y_train)
+
+print("Pipeline concluído com sucesso!")
