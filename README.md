@@ -1,7 +1,7 @@
 # Sentiment Analysis with NLP (FinBERT)
 
 ## 📌 Overview
-This project applies Natural Language Processing (NLP) techniques to analyze the sentiment of financial news and explore its relationship with stock price movements.
+This project applies Natural Language Processing (NLP) techniques to analyze the sentiment of financial news and evaluate its impact on stock price movements, using real-world financial data.
 
 ---
 
